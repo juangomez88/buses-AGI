@@ -4,47 +4,45 @@ import com.buses.agi.DTO.DestinoDTO;
 import com.buses.agi.model.Destino;
 import com.buses.agi.repository.DestinoRepository;
 import com.buses.agi.service.DestinoService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-
-import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
+@Slf4j
 public class DestinoServiceImpl implements DestinoService {
 
     private final DestinoRepository destinoRepository;
 
-    @Autowired
-    public DestinoServiceImpl(DestinoRepository destinoRepository) {
-        this.destinoRepository = destinoRepository;
-    }
-
     @Override
-    public List<DestinoDTO> findAllDestinos() {
-        // Convierte una lista de entidades Destino a una lista de DestinoDTO
-        return destinoRepository.findAll().stream()
-                .map(this::convertToDto)
-                .collect(Collectors.toList());
+    public Optional<DestinoDTO> findDestinoByNombre(String nombre) {
+        try {
+            Optional<Destino> destino = destinoRepository.findByNombreAndActivoTrue(nombre);
+            return destino.map(this::convertToDTO);
+        } catch (Exception e) {
+            log.error("Error al buscar destino por nombre: {}", nombre, e);
+            return Optional.empty();
+        }
     }
 
     @Override
     public Optional<DestinoDTO> findDestinoById(Long id) {
-        // Busca un destino por ID y lo convierte a DTO si existe
-        return destinoRepository.findById(id)
-                .map(this::convertToDto);
+        try {
+            Optional<Destino> destino = destinoRepository.findByIdAndActivoTrue(id);
+            return destino.map(this::convertToDTO);
+        } catch (Exception e) {
+            log.error("Error al buscar destino por ID: {}", id, e);
+            return Optional.empty();
+        }
     }
 
-    @Override
-    public Optional<DestinoDTO> findDestinoByNombre(String nombre) {
-        // Busca un destino por nombre y lo convierte a DTO si existe
-        return destinoRepository.findByNombre(nombre)
-                .map(this::convertToDto);
-    }
-
-    // Método auxiliar para convertir una entidad Destino a DestinoDTO
-    private DestinoDTO convertToDto(Destino destino) {
-        return new DestinoDTO(destino.getId(), destino.getNombre());
+    private DestinoDTO convertToDTO(Destino destino) {
+        DestinoDTO dto = new DestinoDTO();
+        dto.setId(destino.getId());
+        dto.setNombre(destino.getNombre());
+        dto.setActivo(destino.getActivo());
+        return dto;
     }
 }
