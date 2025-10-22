@@ -5,10 +5,7 @@ import com.buses.agi.DTO.HorarioDTO;
 import com.buses.agi.DTO.PrecioDTO;
 import com.buses.agi.DTO.ReservaRequestDTO;
 import com.buses.agi.DTO.ReservaResponseDTO;
-import com.buses.agi.service.DestinoService;
-import com.buses.agi.service.HorarioService;
-import com.buses.agi.service.PrecioService;
-import com.buses.agi.service.ReservaService;
+import com.buses.agi.service.*;
 import lombok.extern.slf4j.Slf4j;
 import org.asteriskjava.fastagi.AgiChannel;
 import org.asteriskjava.fastagi.AgiException;
@@ -17,6 +14,7 @@ import org.asteriskjava.fastagi.BaseAgiScript;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -39,6 +37,9 @@ public class AgiController extends BaseAgiScript {
 
     @Autowired
     private ReservaService reservaService;
+
+    @Autowired
+    private RutaService rutaService;
 
     private final Map<String, ReservaRequestDTO> currentReservations = new ConcurrentHashMap<>();
     private final Map<String, String> currentOriginNames = new ConcurrentHashMap<>();
@@ -132,7 +133,21 @@ public class AgiController extends BaseAgiScript {
             return;
         }
 
-        channel.exec("AGI", "googletts.agi,\"Seleccione ciudad de destino: 1 Medellín, 2 Bogotá, 3 Cali, 4 Cartagena.\",es");
+        // Obtener los destinos disponibles desde la tabla rutas
+        List<DestinoDTO> destinosDisponibles = rutaService.findDestinosByOrigen(idOrigen);
+
+        if (destinosDisponibles.isEmpty()) {
+            channel.exec("AGI", "googletts.agi,\"No hay destinos disponibles para esta ciudad.\",es");
+            mainMenu(channel, callerId);
+            return;
+        }
+
+        // Leer los destinos disponibles
+        channel.exec("AGI", "googletts.agi,\"Seleccione ciudad de destino:\",es");
+        for (int i = 0; i < destinosDisponibles.size(); i++) {
+            channel.exec("AGI", String.format("googletts.agi,\"%d para %s.\",es",
+                    (i + 1), destinosDisponibles.get(i).getNombre()));
+        }
 
         String digit = String.valueOf(channel.waitForDigit(10000));
         if (digit == null) {
@@ -141,42 +156,43 @@ public class AgiController extends BaseAgiScript {
             return;
         }
 
-        String ciudad = obtenerCiudadPorOpcion(digit);
-        if (ciudad == null) {
-            channel.exec("AGI", "googletts.agi,\"Opción no válida. Volviendo al menú.\",es");
+        try {
+            int choice = Integer.parseInt(digit);
+            if (choice < 1 || choice > destinosDisponibles.size()) {
+                channel.exec("AGI", "googletts.agi,\"Opción no válida. Volviendo al menú.\",es");
+                mainMenu(channel, callerId);
+                return;
+            }
+
+            DestinoDTO destino = destinosDisponibles.get(choice - 1);
+            currentReservations.get(callerId).setIdDestinoLlegada(destino.getId());
+            currentDestinationNames.put(callerId, destino.getNombre());
+
+            log.info("Destino seleccionado: {} (ID {})", destino.getNombre(), destino.getId());
+            seleccionarFecha(channel, callerId);
+        } catch (NumberFormatException e) {
+            channel.exec("AGI", "googletts.agi,\"Opción inválida. Volviendo al menú.\",es");
             mainMenu(channel, callerId);
-            return;
         }
-
-        Optional<DestinoDTO> destinoOpt = destinoService.findDestinoByNombre(ciudad);
-        if (destinoOpt.isEmpty()) {
-            channel.exec("AGI", "googletts.agi,\"Ciudad no disponible. Volviendo al menú.\",es");
-            mainMenu(channel, callerId);
-            return;
-        }
-
-        DestinoDTO destino = destinoOpt.get();
-
-        if (destino.getId().equals(idOrigen)) {
-            channel.exec("AGI", "googletts.agi,\"El destino no puede ser igual al origen. Volviendo al menú.\",es");
-            mainMenu(channel, callerId);
-            return;
-        }
-
-        ReservaRequestDTO reserva = currentReservations.get(callerId);
-        reserva.setIdDestinoLlegada(destino.getId());
-        currentDestinationNames.put(callerId, destino.getNombre());
-
-        log.info("Destino seleccionado: {} (ID {})", destino.getNombre(), destino.getId());
-        seleccionarFecha(channel, callerId);
     }
 
+
     private void seleccionarFecha(AgiChannel channel, String callerId) throws AgiException {
-        channel.exec("AGI", "googletts.agi,\"Ingrese la fecha en formato AAAAMMDD, por ejemplo 20241225 para Navidad.\",es");
+        channel.exec("AGI", "googletts.agi,\"Ingrese la fecha en formato AAAAMMDD, por ejemplo 20251225.\",es");
 
         String fechaInput = channel.getData("beep", 15000, 8);
-        if (fechaInput == null || fechaInput.length() != 8) {
-            channel.exec("AGI", "googletts.agi,\"Formato incorrecto. Volviendo al menú.\",es");
+
+        if (fechaInput == null) {
+            channel.exec("AGI", "googletts.agi,\"No se recibió fecha. Volviendo al menú.\",es");
+            mainMenu(channel, callerId);
+            return;
+        }
+
+        // Elimina posibles espacios o caracteres extraños
+        fechaInput = fechaInput.replaceAll("[^0-9]", "");
+
+        if (fechaInput.length() != 8) {
+            channel.exec("AGI", "googletts.agi,\"Formato incorrecto. Debe ser AAAAMMDD, por ejemplo 20251225.\",es");
             mainMenu(channel, callerId);
             return;
         }
@@ -196,12 +212,17 @@ public class AgiController extends BaseAgiScript {
 
             currentReservations.get(callerId).setFechaViaje(fechaViaje);
             seleccionarHora(channel, callerId);
+        } catch (DateTimeException e) {
+            log.error("Fecha inválida: {}", e.getMessage());
+            channel.exec("AGI", "googletts.agi,\"La fecha ingresada no es válida. Volviendo al menú.\",es");
+            mainMenu(channel, callerId);
         } catch (Exception e) {
             log.error("Error al procesar fecha: {}", e.getMessage());
-            channel.exec("AGI", "googletts.agi,\"Error en fecha. Volviendo al menú.\",es");
+            channel.exec("AGI", "googletts.agi,\"Error al procesar la fecha. Volviendo al menú.\",es");
             mainMenu(channel, callerId);
         }
     }
+
 
     private void seleccionarHora(AgiChannel channel, String callerId) throws AgiException {
         ReservaRequestDTO reserva = currentReservations.get(callerId);
